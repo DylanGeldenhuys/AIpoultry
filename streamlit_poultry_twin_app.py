@@ -130,7 +130,7 @@ if page == "Dashboard":
         st.subheader("Available Litters")
         st.write(", ".join(LITTERS))
 
-# -----------------------------
+## -----------------------------
 # Anomaly Monitor (Streaming)
 # -----------------------------
 if page == "Anomaly Monitor":
@@ -143,8 +143,13 @@ if page == "Anomaly Monitor":
     inject_now = st.sidebar.button("Inject anomaly now")
     keep_points = st.sidebar.slider("Points to keep in view", 120, 720, 360, step=60)
 
-    # 🔁 Auto-refresh every N seconds (triggers a rerun)
-    tick = st_autorefresh(interval=int(refresh * 1000), key="anom_tick")
+    # 🔁 Self-rerun timer (no external packages)
+    import time
+    if "next_run" not in st.session_state:
+        st.session_state.next_run = time.time() + refresh
+    if time.time() >= st.session_state.next_run:
+        st.session_state.next_run = time.time() + refresh
+        st.rerun()
 
     # Initialize stream once
     if "stream_df" not in st.session_state:
@@ -154,24 +159,22 @@ if page == "Anomaly Monitor":
             t = np.arange(N0)
             return base + amp*np.sin(2*np.pi*t/period) + np.random.normal(0, noise, N0)
         st.session_state.stream_df = pd.DataFrame({
-            "feed_water_ratio": seasonal_noise(1.7, 0.1, 48, 0.02),
-            "temperature":      seasonal_noise(23.0, 3.0, 96, 0.3),
-            "humidity":         seasonal_noise(60.0, 6.0, 96, 1.2),
-            "draft":            seasonal_noise(0.2, 0.1, 60, 0.02),
-            "daily_weight_gain":seasonal_noise(55.0, 5.0, 96, 0.6),
-            "mobility":         seasonal_noise(85.0, 4.0, 96, 0.8),
-            "audio_noise":      seasonal_noise(30.0, 6.0, 96, 1.5),
+            "feed_water_ratio":  seasonal_noise(1.7, 0.1, 48, 0.02),
+            "temperature":       seasonal_noise(23.0, 3.0, 96, 0.3),
+            "humidity":          seasonal_noise(60.0, 6.0, 96, 1.2),
+            "draft":             seasonal_noise(0.2, 0.1, 60, 0.02),
+            "daily_weight_gain": seasonal_noise(55.0, 5.0, 96, 0.6),
+            "mobility":          seasonal_noise(85.0, 4.0, 96, 0.8),
+            "audio_noise":       seasonal_noise(30.0, 6.0, 96, 1.5),
         }, index=idx)
         st.session_state.last_tick = -1
 
     df = st.session_state.stream_df
 
-    # Append one new sample per tick
-    if tick != st.session_state.last_tick:
-        new = df.iloc[-1] + np.random.normal(0, df.std()/50.0)
-        st.session_state.stream_df.loc[len(df)] = new.values
-        st.session_state.last_tick = tick
-        df = st.session_state.stream_df
+    # Append one new sample per run (you’ll get one per refresh interval)
+    new = df.iloc[-1] + np.random.normal(0, df.std()/50.0)
+    st.session_state.stream_df.loc[len(df)] = new.values
+    df = st.session_state.stream_df
 
     # Optional anomaly injection
     if inject_now:
@@ -192,7 +195,7 @@ if page == "Anomaly Monitor":
     anomaly_score = z.abs().mean(axis=1)
     thr = anomaly_score.mean() + z_thr*anomaly_score.std()
 
-    # Plots (same as before)
+    # Plots
     view = df.tail(keep_points)
     score_view = anomaly_score.tail(keep_points)
     x = view.index.values
