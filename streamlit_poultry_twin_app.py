@@ -135,7 +135,7 @@ if page == "Dashboard":
 # -----------------------------
 if page == "Anomaly Monitor":
     st.title("Real-time Anomaly Detection")
-    st.caption("Auto-refresh every ~10 seconds. Synthetic stream for demo purposes.")
+    st.caption("Auto-refresh every N seconds. Synthetic stream for demo purposes.")
 
     refresh = st.sidebar.slider("Refresh interval (seconds)", 5, 30, 10)
     window = st.sidebar.slider("Rolling window (samples)", 24, 240, 96, step=12)
@@ -143,7 +143,10 @@ if page == "Anomaly Monitor":
     inject_now = st.sidebar.button("Inject anomaly now")
     keep_points = st.sidebar.slider("Points to keep in view", 120, 720, 360, step=60)
 
-    # Initialize session state stream
+    # 🔁 Auto-refresh every N seconds (triggers a rerun)
+    tick = st_autorefresh(interval=int(refresh * 1000), key="anom_tick")
+
+    # Initialize stream once
     if "stream_df" not in st.session_state:
         N0 = 180
         idx = pd.RangeIndex(N0)
@@ -152,69 +155,60 @@ if page == "Anomaly Monitor":
             return base + amp*np.sin(2*np.pi*t/period) + np.random.normal(0, noise, N0)
         st.session_state.stream_df = pd.DataFrame({
             "feed_water_ratio": seasonal_noise(1.7, 0.1, 48, 0.02),
-            "temperature": seasonal_noise(23.0, 3.0, 96, 0.3),
-            "humidity": seasonal_noise(60.0, 6.0, 96, 1.2),
-            "draft": seasonal_noise(0.2, 0.1, 60, 0.02),
-            "daily_weight_gain": seasonal_noise(55.0, 5.0, 96, 0.6),
-            "mobility": seasonal_noise(85.0, 4.0, 96, 0.8),
-            "audio_noise": seasonal_noise(30.0, 6.0, 96, 1.5),
+            "temperature":      seasonal_noise(23.0, 3.0, 96, 0.3),
+            "humidity":         seasonal_noise(60.0, 6.0, 96, 1.2),
+            "draft":            seasonal_noise(0.2, 0.1, 60, 0.02),
+            "daily_weight_gain":seasonal_noise(55.0, 5.0, 96, 0.6),
+            "mobility":         seasonal_noise(85.0, 4.0, 96, 0.8),
+            "audio_noise":      seasonal_noise(30.0, 6.0, 96, 1.5),
         }, index=idx)
-        st.session_state.last_update = time.time()
+        st.session_state.last_tick = -1
 
-    # Update stream with a few new points each refresh
-    now = time.time()
-    if now - st.session_state.last_update > refresh:
-        k = int((now - st.session_state.last_update) // refresh)
-        for _ in range(max(1, k)):
-            t = len(st.session_state.stream_df)
-            new = st.session_state.stream_df.iloc[-1] + np.random.normal(0, st.session_state.stream_df.std()/50.0)
-            st.session_state.stream_df.loc[t] = new.values
-        st.session_state.last_update = now
+    df = st.session_state.stream_df
 
-    df = st.session_state.stream_df.copy()
+    # Append one new sample per tick
+    if tick != st.session_state.last_tick:
+        new = df.iloc[-1] + np.random.normal(0, df.std()/50.0)
+        st.session_state.stream_df.loc[len(df)] = new.values
+        st.session_state.last_tick = tick
+        df = st.session_state.stream_df
 
-    # Optional anomaly injection (fan failure + humidity spike etc.)
+    # Optional anomaly injection
     if inject_now:
         start = max(len(df)-int(keep_points/3), 0)
         end = min(start + int(keep_points/4), len(df)-1)
-        df.loc[start:end, "temperature"] -= 4.0
-        df.loc[start:end, "humidity"] += 12.0
-        df.loc[start:end, "draft"] -= 0.12
-        df.loc[start:end, "audio_noise"] += 10.0
+        df.loc[start:end, "temperature"]       -= 4.0
+        df.loc[start:end, "humidity"]          += 12.0
+        df.loc[start:end, "draft"]             -= 0.12
+        df.loc[start:end, "audio_noise"]       += 10.0
         df.loc[start:end, "daily_weight_gain"] -= 12.0
-        df.loc[start:end, "mobility"] -= 10.0
-        df.loc[start:end, "feed_water_ratio"] += 0.25
-        st.session_state.stream_df = df
+        df.loc[start:end, "mobility"]          -= 10.0
+        df.loc[start:end, "feed_water_ratio"]  += 0.25
 
     # Compute anomaly score
     roll_mean = df.rolling(window, min_periods=12).mean()
-    roll_std = df.rolling(window, min_periods=12).std().replace(0, 1e-6)
+    roll_std  = df.rolling(window, min_periods=12).std().replace(0, 1e-6)
     z = (df - roll_mean) / roll_std
     anomaly_score = z.abs().mean(axis=1)
     thr = anomaly_score.mean() + z_thr*anomaly_score.std()
 
+    # Plots (same as before)
     view = df.tail(keep_points)
     score_view = anomaly_score.tail(keep_points)
     x = view.index.values
 
-    # Plot multi-signal scaled lines
     scaled = (view - view.mean()) / (view.std() + 1e-9)
     fig1, ax1 = plt.subplots(figsize=(12, 5))
     for col in scaled.columns:
         ax1.plot(x, scaled[col], label=col)
-    ax1.set_xlabel("Time index")
-    ax1.set_ylabel("Scaled Signal")
-    ax1.set_title("Multi-Signal Monitoring")
-    ax1.legend(ncol=3, fontsize=8)
+    ax1.set_xlabel("Time index"); ax1.set_ylabel("Scaled Signal")
+    ax1.set_title("Multi-Signal Monitoring"); ax1.legend(ncol=3, fontsize=8)
     st.pyplot(fig1)
 
-    # Plot anomaly score with threshold
     fig2, ax2 = plt.subplots(figsize=(12, 3.5))
     ax2.plot(score_view.index.values, score_view.values, label="Anomaly Score")
     ax2.axhline(thr, linestyle="--", label="Threshold")
-    ax2.set_xlabel("Time index")
-    ax2.set_ylabel("Score")
-    ax2.set_title("Anomaly Score")
+    ax2.set_xlabel("Time index"); ax2.set_ylabel("Score"); ax2.set_title("Anomaly Score")
     ax2.legend()
     st.pyplot(fig2)
 
