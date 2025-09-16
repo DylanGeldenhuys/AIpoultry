@@ -130,28 +130,27 @@ if page == "Dashboard":
         st.subheader("Available Litters")
         st.write(", ".join(LITTERS))
 
-## -----------------------------
+from streamlit_autorefresh import st_autorefresh
+import time
+
+# -----------------------------
 # Anomaly Monitor (Streaming)
 # -----------------------------
 if page == "Anomaly Monitor":
     st.title("Real-time Anomaly Detection")
-    st.caption("Auto-refresh every N seconds. Synthetic stream for demo purposes.")
+    st.caption("This page auto-refreshes and appends a new sample each tick.")
 
+    # Controls
     refresh = st.sidebar.slider("Refresh interval (seconds)", 5, 30, 10)
-    window = st.sidebar.slider("Rolling window (samples)", 24, 240, 96, step=12)
-    z_thr = st.sidebar.slider("Z-score threshold", 1.0, 4.0, 2.0, step=0.1)
-    inject_now = st.sidebar.button("Inject anomaly now")
+    window  = st.sidebar.slider("Rolling window (samples)", 24, 240, 96, step=12)
+    z_thr   = st.sidebar.slider("Z-score threshold", 1.0, 4.0, 2.0, step=0.1)
     keep_points = st.sidebar.slider("Points to keep in view", 120, 720, 360, step=60)
+    inject_now  = st.sidebar.button("Inject anomaly now")
 
-    # 🔁 Self-rerun timer (no external packages)
-    import time
-    if "next_run" not in st.session_state:
-        st.session_state.next_run = time.time() + refresh
-    if time.time() >= st.session_state.next_run:
-        st.session_state.next_run = time.time() + refresh
-        st.rerun()
+    # 🔁 Auto-refresh every N seconds (forces a re-run)
+    st_autorefresh(interval=int(refresh * 1000), key="anom_tick")
 
-    # Initialize stream once
+    # Init stream state once
     if "stream_df" not in st.session_state:
         N0 = 180
         idx = pd.RangeIndex(N0)
@@ -167,19 +166,18 @@ if page == "Anomaly Monitor":
             "mobility":          seasonal_noise(85.0, 4.0, 96, 0.8),
             "audio_noise":       seasonal_noise(30.0, 6.0, 96, 1.5),
         }, index=idx)
-        st.session_state.last_tick = -1
 
+    # Append exactly one new sample on every run
     df = st.session_state.stream_df
-
-    # Append one new sample per run (you’ll get one per refresh interval)
-    new = df.iloc[-1] + np.random.normal(0, df.std()/50.0)
+    jitter = (df.std().replace(0, 1.0) / 50.0)  # avoid zero-std
+    new = df.iloc[-1] + np.random.normal(0, jitter.values)
     st.session_state.stream_df.loc[len(df)] = new.values
     df = st.session_state.stream_df
 
     # Optional anomaly injection
     if inject_now:
         start = max(len(df)-int(keep_points/3), 0)
-        end = min(start + int(keep_points/4), len(df)-1)
+        end   = min(start + int(keep_points/4), len(df)-1)
         df.loc[start:end, "temperature"]       -= 4.0
         df.loc[start:end, "humidity"]          += 12.0
         df.loc[start:end, "draft"]             -= 0.12
@@ -188,7 +186,7 @@ if page == "Anomaly Monitor":
         df.loc[start:end, "mobility"]          -= 10.0
         df.loc[start:end, "feed_water_ratio"]  += 0.25
 
-    # Compute anomaly score
+    # Anomaly score
     roll_mean = df.rolling(window, min_periods=12).mean()
     roll_std  = df.rolling(window, min_periods=12).std().replace(0, 1e-6)
     z = (df - roll_mean) / roll_std
